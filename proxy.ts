@@ -1,66 +1,61 @@
 import { NextRequest, NextResponse } from "next/server";
-import jwt from 'jsonwebtoken';
-
-const ACCESS_TOKEN_SECRET = process.env.JWT_ACCESS_SECRET!;
-const REFRESH_TOKEN_SECRET = process.env.JWT_REFRESH_SECRET!;
-
+// if (!ACCESS_TOKEN_SECRET || !REFRESH_TOKEN_SECRET) {
+//    throw new Error('JWT secrets are missing in environment variables');
+// }
 // 受保护的路由（需要登录）
 const protectedRoutes = ['/dashboard', '/admin', '/profile'];
 // 需要 ADMIN 角色的路由
 const adminRoutes = ['/admin'];
 
-export async function middleware(request: NextRequest) {
+const PUBLIC_PATHS = ['/login', '/register', '/api'];
+
+export async function proxy(request: NextRequest) {
    const path = request.nextUrl.pathname;
 
-   if (path === 'login' || path === '/api') {
+
+   // 1. 公共路径直接放行
+   if (PUBLIC_PATHS.some(p => path.startsWith(p))) {
       return NextResponse.next();
    }
-
    const accessToken = request.cookies.get('access_token')?.value;
-
    // 情况 1：有 Access Token
    if (accessToken) {
       try {
-         const payload = jwt.verify(accessToken, ACCESS_TOKEN_SECRET) as {
-            username: string;
-            role: string;
-            exp: number;
-         };
-
-         // 检查是否过期
-         if (Date.now() >= payload.exp * 1000) {
-            throw new Error('Token expired');
-         }
-
-         // 检查 ADMIN 路由权限
-         if (adminRoutes.some((route) => path.startsWith(route))) {
-            if (payload.role !== 'ADMIN') {
-               return NextResponse.redirect(new URL('/403', request.url));
+         const res = await fetch('http://localhost:3002/auth/profile', {
+            headers: { Cookie: request.headers.get('cookie') || '' },
+            credentials: 'include',
+         })
+         const data = await res.json();
+         if (res.ok) {
+            const { role } = data;
+            // 3. 检查是否访问了 ADMIN 专属路由
+            if (adminRoutes.some(route => path.startsWith(route))) {
+               if (role !== 'TEST_ADMIN') {
+                  console.log(`User with role ${role} denied access to ${path}`);
+                  return NextResponse.redirect(new URL('/login', request.url));
+               }
             }
+            return NextResponse.next();
+         } else {
+            console.log("error token")
          }
-
-         return NextResponse.next();
       } catch (e) {
-         // Token 无效或过期 → 尝试刷新
+         console.log("err: ", e)
       }
    }
    // 情况 2：尝试刷新 Token
    const refreshToken = request.cookies.get('refresh_token')?.value;
    if (refreshToken) {
       try {
-         // 验证 refresh token 是否有效（可选）
-         jwt.verify(refreshToken, REFRESH_TOKEN_SECRET);
-
          // 调用 refresh 接口
          const refreshRes = await fetch(
-            `${process.env.NEXT_PUBLIC_API_BASE}/auth/refresh`,
+            `http://localhost:3002/auth/refresh`,
             {
                method: 'POST',
                headers: { Cookie: request.headers.get('cookie') || '' },
                credentials: 'include',
             }
          );
-
          if (refreshRes.ok) {
             // 刷新成功，重试原请求
             const response = NextResponse.next();
@@ -75,6 +70,7 @@ export async function middleware(request: NextRequest) {
          }
       } catch (e) {
          // 刷新失败
+         console.log("err: ",e)
       }
    }
 
@@ -83,5 +79,7 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-   matcher: [...protectedRoutes,...adminRoutes],
+   matcher: [
+      '/((?!api|_next/static|_next/image|favicon\\.ico|.*\\.(?:png|jpg|jpeg|svg|gif|webp)$).*)',
+   ],
 };
